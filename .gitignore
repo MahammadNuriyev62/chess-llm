@@ -1,0 +1,15 @@
+.codex/
+.claude/
+.lightning_studio/
+outputs/
+outputs_chess_distill/
+.triton/
+trash/
+__pycache__/
+_unsloth_temporary_saved_buffers/
+.vscode/
+.cursor-server
+.vscode-server
+.wget-hsts
+.windsurf-server
+unsloth_compiled_cache/
