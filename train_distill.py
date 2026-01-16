@@ -31,6 +31,7 @@ def _parse_args():
     parser.add_argument("--per-device-train-batch-size", type=int, default=2)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=2e-4)
+    parser.add_argument("--num-train-epochs", type=float, default=1.0)
     parser.add_argument("--max-steps", type=int, default=-1)
     parser.add_argument("--warmup-steps", type=int, default=0)
     parser.add_argument("--logging-steps", type=int, default=10)
@@ -120,6 +121,7 @@ def main():
         per_device_train_batch_size=args.per_device_train_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
+        num_train_epochs=args.num_train_epochs,
         max_steps=args.max_steps,
         warmup_steps=args.warmup_steps,
         logging_steps=args.logging_steps,
