@@ -54,6 +54,12 @@ def _load_model_and_tokenizer(model_dir, base_model, trust_remote_code, device):
             torch_dtype=dtype,
             trust_remote_code=trust_remote_code,
         )
+        input_emb = model.get_input_embeddings()
+        if input_emb is not None and len(tokenizer) != input_emb.weight.shape[0]:
+            # Adapter may include resized embeddings for extra move tokens.
+            model.resize_token_embeddings(len(tokenizer))
+            if hasattr(model, "tie_weights"):
+                model.tie_weights()
         model = PeftModel.from_pretrained(model, model_dir)
     else:
         model = AutoModelForCausalLM.from_pretrained(

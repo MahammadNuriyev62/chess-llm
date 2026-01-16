@@ -6,10 +6,7 @@ import torch
 from transformers import TrainingArguments, set_seed
 from chess_distill.data import ChessDistillDataset, DistillDataCollator
 from chess_distill.move_tokens import EXPECTED_UCI_MOVE_COUNT, generate_uci_move_tokens
-from chess_distill.tokenizer_utils import (
-    cast_embeddings_to_float32,
-    extend_tokenizer_with_moves,
-)
+from chess_distill.tokenizer_utils import extend_tokenizer_with_moves
 from chess_distill.trainer import ChessDistillTrainer
 
 
@@ -34,10 +31,16 @@ def _parse_args():
     parser.add_argument("--per-device-train-batch-size", type=int, default=2)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=2e-4)
-    parser.add_argument("--max-steps", type=int, default=1000)
+    parser.add_argument("--max-steps", type=int, default=-1)
     parser.add_argument("--warmup-steps", type=int, default=0)
     parser.add_argument("--logging-steps", type=int, default=10)
     parser.add_argument("--save-steps", type=int, default=200)
+    parser.add_argument(
+        "--legal-move-smoothing",
+        type=float,
+        default=0.1,
+        help="Mix this much uniform probability over legal moves into the target distribution.",
+    )
     parser.add_argument("--seed", type=int, default=3407)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--cp-scale", type=float, default=100.0)
@@ -87,6 +90,8 @@ def main():
             "gate_proj",
             "up_proj",
             "down_proj",
+            "embed_tokens",
+            "lm_head",
         ],
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
@@ -95,10 +100,8 @@ def main():
         random_state=args.seed,
         use_rslora=False,
         loftq_config=None,
-        modules_to_save=["embed_tokens", "lm_head"],
     )
 
-    cast_embeddings_to_float32(model)
     model.config.use_cache = False
 
     dataset = ChessDistillDataset(
@@ -108,6 +111,7 @@ def main():
         max_length=args.max_seq_length,
         temperature=args.temperature,
         cp_scale=args.cp_scale,
+        legal_move_smoothing=args.legal_move_smoothing,
     )
     collator = DistillDataCollator(tokenizer)
 

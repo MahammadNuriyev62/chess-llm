@@ -1,6 +1,11 @@
 import json
 import math
 
+try:
+    import chess
+except ImportError:  # Optional dependency for legal move generation.
+    chess = None
+
 import torch
 from torch.utils.data import Dataset
 
@@ -77,6 +82,7 @@ def build_move_prob_vector(
     temperature=1.0,
     cp_scale=100.0,
     mate_score=100000.0,
+    legal_move_smoothing=0.1,
 ):
     move_items = []
     prob_items = []
@@ -94,26 +100,46 @@ def build_move_prob_vector(
             cp_items.append((uci, value))
             move_items.append((uci, "cp"))
 
+    labeled = None
     if prob_items and len(prob_items) == len(move_items):
         ucis, probs = zip(*prob_items)
         probs = _normalize_probs(probs)
-        return _vectorize_probs(ucis, probs, uci_to_index)
-
-    if cp_items:
+        labeled = _vectorize_probs(ucis, probs, uci_to_index)
+    elif cp_items:
         ucis, cps = zip(*cp_items)
         scaled = []
         scale = max(temperature * cp_scale, 1e-6)
         for cp in cps:
             scaled.append(cp / scale)
         probs = _softmax_scores(scaled)
-        return _vectorize_probs(ucis, probs, uci_to_index)
-
-    if prob_items:
+        labeled = _vectorize_probs(ucis, probs, uci_to_index)
+    elif prob_items:
         ucis, probs = zip(*prob_items)
         probs = _normalize_probs(probs)
-        return _vectorize_probs(ucis, probs, uci_to_index)
+        labeled = _vectorize_probs(ucis, probs, uci_to_index)
+    else:
+        labeled = torch.zeros(len(uci_to_index), dtype=torch.float32)
 
-    return torch.zeros(len(uci_to_index), dtype=torch.float32)
+    if legal_move_smoothing <= 0:
+        return labeled
+
+    fen = record.get("fen")
+    legal_vector = _legal_move_vector(fen, uci_to_index)
+    if legal_vector is None:
+        return labeled
+
+    legal_mask = (legal_vector > 0).float()
+    masked = labeled * legal_mask
+    masked_total = masked.sum()
+    if masked_total > 0:
+        labeled = masked / masked_total
+    else:
+        labeled = masked
+
+    if labeled.sum().item() <= 0:
+        return legal_vector
+
+    return (1.0 - legal_move_smoothing) * labeled + legal_move_smoothing * legal_vector
 
 
 def _vectorize_probs(ucis, probs, uci_to_index):
@@ -123,6 +149,31 @@ def _vectorize_probs(ucis, probs, uci_to_index):
         if idx is None:
             continue
         vector[idx] = prob
+
+    total = vector.sum()
+    if total > 0:
+        vector = vector / total
+    return vector
+
+
+def _legal_move_vector(fen, uci_to_index):
+    if not fen:
+        return None
+    if chess is None:
+        raise RuntimeError(
+            "python-chess is required to compute legal moves. "
+            "Install it with `pip install python-chess`."
+        )
+    try:
+        board = chess.Board(fen)
+    except ValueError:
+        return None
+
+    vector = torch.zeros(len(uci_to_index), dtype=torch.float32)
+    for move in board.legal_moves:
+        idx = uci_to_index.get(move.uci())
+        if idx is not None:
+            vector[idx] = 1.0
 
     total = vector.sum()
     if total > 0:
@@ -141,6 +192,7 @@ class ChessDistillDataset(Dataset):
         cp_scale=100.0,
         mate_score=100000.0,
         add_special_tokens=False,
+        legal_move_smoothing=0.1,
     ):
         self.records = load_jsonl(jsonl_path)
         self.tokenizer = tokenizer
@@ -150,6 +202,7 @@ class ChessDistillDataset(Dataset):
         self.cp_scale = cp_scale
         self.mate_score = mate_score
         self.add_special_tokens = add_special_tokens
+        self.legal_move_smoothing = legal_move_smoothing
 
     def __len__(self):
         return len(self.records)
@@ -170,6 +223,7 @@ class ChessDistillDataset(Dataset):
             temperature=self.temperature,
             cp_scale=self.cp_scale,
             mate_score=self.mate_score,
+            legal_move_smoothing=self.legal_move_smoothing,
         )
         return {
             "input_ids": enc["input_ids"],
