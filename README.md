@@ -21,10 +21,10 @@ Unlike standard behavioral cloning (predicting the single best move), we distill
 | Aspect | Naive SFT | Our Approach |
 |--------|-----------|--------------|
 | **Labels** | One-hot on best move | Soft distribution over all legal moves |
-| **Loss** | Cross-entropy | KL divergence |
 | **Tokens** | Native tokenizer (variable length) | Special `<uci_move>` tokens (single token) |
 | **Gradient** | Sparse (1 move gets signal) | Dense (all legal moves get signal) |
 | **2nd-best move** | Same penalty as blunder | Small penalty |
+<!-- | **Loss** | Cross-entropy | KL divergence | -->
 
 ### Soft Labels vs Hard Labels
 
@@ -182,7 +182,7 @@ Stayed around 3-5% throughout. This metric is **harsh for soft-label training** 
 | Finding | Evidence |
 |---------|----------|
 | **Soft labels enable legality learning** | 5% → 65% legal predictions |
-| **KL divergence loss trains smoothly** | No gradient conflicts, stable loss curve |
+| **Loss trains smoothly** | No gradient conflicts, stable loss curve |
 | **Legal move smoothing** | Teaches legality even with sparse top-k scoring |
 | **LoRA with embedding layers** | Successfully trains new token representations |
 
@@ -267,7 +267,7 @@ python test_next_token_logits.py \
 │   ├── data.py              # Dataset and soft label construction
 │   ├── move_tokens.py       # UCI move token generation (1968 moves)
 │   ├── tokenizer_utils.py   # Vocabulary extension utilities
-│   └── trainer.py           # Custom trainer with KL loss
+│   └── trainer.py           # Custom trainer
 ├── generate_dataset.py      # Stockfish annotation pipeline
 ├── train_distill.py         # Main training script
 ├── test_next_token_logits.py
