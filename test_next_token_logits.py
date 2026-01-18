@@ -7,6 +7,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from chess_distill.move_tokens import generate_uci_move_tokens
 
+OUTPUT_START_TOKEN = "<uci_move>"
+
 
 def _pick_device():
     if torch.cuda.is_available():
@@ -73,8 +75,21 @@ def _load_model_and_tokenizer(model_dir, base_model, trust_remote_code, device):
     return model, tokenizer
 
 
-def _format_prompt(fen):
-    return f"FEN {fen.strip()} Move: "
+def _format_prompt(fen, tokenizer):
+    user_content = (
+        f'Given the current chess board "{fen.strip()}", choose the best legal move\n\n'
+        "Output Format:\n<uci_move>...best move in uci format...</uci_move>"
+    )
+    messages = [{"role": "user", "content": user_content}]
+    if hasattr(tokenizer, "apply_chat_template"):
+        prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    else:
+        prompt = user_content + "\n"
+    return prompt + OUTPUT_START_TOKEN
 
 
 def _topk_from_logits(logits, tokenizer, k):
@@ -128,8 +143,8 @@ def main():
         args.model_dir, args.base_model, args.trust_remote_code, device
     )
 
-    prompt = _format_prompt(args.fen)
-    enc = tokenizer(prompt, return_tensors="pt")
+    prompt = _format_prompt(args.fen, tokenizer)
+    enc = tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
     enc = {k: v.to(device) for k, v in enc.items()}
 
     with torch.no_grad():

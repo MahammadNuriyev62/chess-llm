@@ -105,5 +105,5 @@ def generate_all_uci_moves():
 
 def generate_uci_move_tokens():
     uci_moves = generate_all_uci_moves()
-    move_tokens = [f"<{uci}>" for uci in uci_moves]
+    move_tokens = list(uci_moves)
     return uci_moves, move_tokens

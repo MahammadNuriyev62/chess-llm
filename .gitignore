@@ -13,3 +13,6 @@ _unsloth_temporary_saved_buffers/
 .wget-hsts
 .windsurf-server
 unsloth_compiled_cache/
+wandb
+.netrc
+*.log

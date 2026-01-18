@@ -1,8 +1,9 @@
 import argparse
 import json
+import os
 import subprocess
 import sys
-from typing import Dict, List, Tuple
+from typing import Dict, List, Set, Tuple
 
 from datasets import load_dataset
 
@@ -125,6 +126,26 @@ def iter_fens(streaming: bool, shuffle_buffer: int, seed: int):
             yield fen.strip()
 
 
+def load_existing_fens(path: str) -> Set[str]:
+    fens: Set[str] = set()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                fen = row.get("fen")
+                if isinstance(fen, str) and fen.strip():
+                    fens.add(fen.strip())
+    except FileNotFoundError:
+        pass
+    return fens
+
+
 def main():
     ap = argparse.ArgumentParser(description="Generate Stockfish-labeled samples from aicrowd/ChessExplained FENs.")
     ap.add_argument("n", type=int, help="Number of samples to generate")
@@ -136,15 +157,48 @@ def main():
     ap.add_argument("--streaming", action="store_true", help="Use streaming mode (recommended for this dataset size)")
     ap.add_argument("--shuffle-buffer", type=int, default=0, help="Streaming shuffle buffer (e.g. 10000). 0 = no shuffle")
     ap.add_argument("--seed", type=int, default=0, help="Seed for streaming shuffle")
+    ap.add_argument(
+        "--append",
+        action="store_true",
+        help="Append to --out instead of overwriting; skips FENs already in that file",
+    )
+    ap.add_argument(
+        "--existing-jsonl",
+        type=str,
+        default=None,
+        help="JSONL file to use for dedupe (defaults to --out when --append is set)",
+    )
     args = ap.parse_args()
 
     proc, send = start_stockfish(args.stockfish, args.threads, args.topk)
 
-    out_f = sys.stdout if args.out == "-" else open(args.out, "w", encoding="utf-8")
+    existing_fens: Set[str] = set()
+    dedupe_path = None
+    dedupe = args.append or args.existing_jsonl is not None
+    if args.existing_jsonl:
+        dedupe_path = args.existing_jsonl
+    elif args.append and args.out != "-" and os.path.exists(args.out):
+        dedupe_path = args.out
+
+    if dedupe_path:
+        existing_fens = load_existing_fens(dedupe_path)
+        if existing_fens:
+            print(f"Loaded {len(existing_fens)} existing FENs from {dedupe_path}", file=sys.stderr)
+
+    if args.append and args.out == "-":
+        print("--append has no effect with --out=-; use --existing-jsonl for dedupe", file=sys.stderr)
+
+    if args.out == "-":
+        out_f = sys.stdout
+    else:
+        mode = "a" if args.append else "w"
+        out_f = open(args.out, mode, encoding="utf-8")
 
     try:
         produced = 0
         for fen in iter_fens(args.streaming, args.shuffle_buffer, args.seed):
+            if dedupe and fen in existing_fens:
+                continue
             moves = evaluate_fen(proc, send, fen, args.nodes, args.topk)
 
             # Match your desired sample structure.
@@ -152,6 +206,8 @@ def main():
 
             out_f.write(json.dumps(sample, ensure_ascii=False) + "\n")
             produced += 1
+            if dedupe:
+                existing_fens.add(fen)
 
             if produced >= args.n:
                 break
