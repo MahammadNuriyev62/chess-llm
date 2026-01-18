@@ -29,7 +29,7 @@ Unlike standard behavioral cloning (predicting the single best move), we distill
 ### Soft Labels vs Hard Labels
 
 <p align="center">
-  <img src="assets/diagram_labels.png" width="700" alt="Label Type Comparison"/>
+  <img src="assets/diagram_labels.png" alt="Label Type Comparison"/>
 </p>
 
 **Hard labels** (left) assign probability 1.0 to Stockfish's top move and 0.0 to everything else. This creates conflicting gradients when similar positions have different "best" moves.
@@ -45,7 +45,7 @@ This teaches the model that e2e4 (0.32) and d2d4 (0.28) are both strong, while h
 ### Tokenization Strategy
 
 <p align="center">
-  <img src="assets/diagram_tokenization.jpg" width="700" alt="Tokenization Comparison"/>
+  <img src="assets/diagram_tokenization.jpg" alt="Tokenization Comparison"/>
 </p>
 
 **Naive tokenization** splits UCI moves into variable-length token sequences (`e`, `2`, `e`, `4`), requiring:
