@@ -16,3 +16,4 @@ unsloth_compiled_cache/
 wandb
 .netrc
 *.log
+.claude.*

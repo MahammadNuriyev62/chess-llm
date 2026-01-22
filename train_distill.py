@@ -85,9 +85,22 @@ def _parse_args():
     parser.add_argument("--per-device-train-batch-size", type=int, default=2)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=2e-4)
+    parser.add_argument("--weight-decay", type=float, default=0.00025)
     parser.add_argument("--num-train-epochs", type=float, default=1.0)
     parser.add_argument("--max-steps", type=int, default=-1)
     parser.add_argument("--warmup-steps", type=int, default=0)
+    parser.add_argument(
+        "--warmup-ratio",
+        type=float,
+        default=0.0,
+        help="Fraction of total steps for warmup (overrides warmup-steps if > 0).",
+    )
+    parser.add_argument(
+        "--lr-scheduler-type",
+        default="linear",
+        choices=["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"],
+        help="Learning rate scheduler type.",
+    )
     parser.add_argument("--logging-steps", type=int, default=10)
     parser.add_argument("--save-steps", type=int, default=200)
     parser.add_argument(
@@ -157,6 +170,12 @@ def _parse_args():
     parser.add_argument("--lora-r", type=int, default=16)
     parser.add_argument("--lora-alpha", type=int, default=16)
     parser.add_argument("--lora-dropout", type=float, default=0.0)
+    parser.add_argument(
+        "--user-message-template",
+        type=str,
+        default=None,
+        help="Path to a Jinja template file for the user message. Template receives 'board_visual' variable.",
+    )
     return parser.parse_args()
 
 
@@ -258,6 +277,7 @@ def main():
         include_legal_mask=args.log_legal_metrics,
         log_samples=args.log_samples,
         log_stats=True,
+        user_message_template_path=args.user_message_template,
     )
     collator = DistillDataCollator(tokenizer)
     logger.info("Dataset size: %d records.", len(dataset))
@@ -267,9 +287,12 @@ def main():
         per_device_train_batch_size=args.per_device_train_batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        lr_scheduler_type=args.lr_scheduler_type,
         num_train_epochs=args.num_train_epochs,
         max_steps=args.max_steps,
         warmup_steps=args.warmup_steps,
+        warmup_ratio=args.warmup_ratio,
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
         save_total_limit=args.save_total_limit,
@@ -279,16 +302,22 @@ def main():
         run_name=args.wandb_run_name,
         remove_unused_columns=False,
         optim="paged_adamw_8bit",
+        dataloader_num_workers=4,
     )
     logger.info(
         "Training setup: batch_size=%d grad_accum=%d effective_batch=%d epochs=%.2f "
-        "max_steps=%d logging_steps=%d save_steps=%d save_total_limit=%d "
+        "max_steps=%d lr_scheduler=%s warmup_steps=%d warmup_ratio=%.3f weight_decay=%.4f "
+        "logging_steps=%d save_steps=%d save_total_limit=%d "
         "log_pred_steps=%d use_wandb=%s.",
         args.per_device_train_batch_size,
         args.gradient_accumulation_steps,
         args.per_device_train_batch_size * args.gradient_accumulation_steps,
         args.num_train_epochs,
         args.max_steps,
+        args.lr_scheduler_type,
+        args.warmup_steps,
+        args.warmup_ratio,
+        args.weight_decay,
         args.logging_steps,
         args.save_steps,
         args.save_total_limit,

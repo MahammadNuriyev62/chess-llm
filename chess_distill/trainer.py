@@ -113,6 +113,12 @@ class ChessDistillTrainer(Trainer):
                             f"legal_top3_mean={metrics.get('metrics/legal_top3_mean', 0.0):.2f}"
                         )
                         summary.append(
+                            f"legal_top3_min={metrics.get('metrics/legal_top3_min', 0.0):.0f}"
+                        )
+                        summary.append(
+                            f"legal_top3_max={metrics.get('metrics/legal_top3_max', 0.0):.0f}"
+                        )
+                        summary.append(
                             f"legal_top1_rate={metrics.get('metrics/legal_top1_rate', 0.0):.4f}"
                         )
                     logger.info("Step %d metrics: %s.", step, " ".join(summary))
@@ -214,6 +220,12 @@ class ChessDistillTrainer(Trainer):
                     {
                         "metrics/legal_top3_mean": float(
                             legal_top3_count.mean().item()
+                        ),
+                        "metrics/legal_top3_min": float(
+                            legal_top3_count.min().item()
+                        ),
+                        "metrics/legal_top3_max": float(
+                            legal_top3_count.max().item()
                         ),
                         "metrics/legal_top3_any_rate": float(
                             (legal_top3_count > 0).float().mean().item()

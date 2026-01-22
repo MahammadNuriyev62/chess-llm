@@ -2,6 +2,8 @@ import json
 import logging
 import math
 
+from jinja2 import Template
+
 try:
     import chess
 except ImportError:  # Optional dependency for legal move generation.
@@ -11,6 +13,24 @@ import torch
 from torch.utils.data import Dataset
 
 logger = logging.getLogger(__name__)
+
+
+def fen_to_board(fen):
+    """Convert FEN string to a visual board representation."""
+    parts = fen.split(' ')
+    rows = parts[0].split('/')
+    lines = ["  a b c d e f g h"]
+    for row_idx, row in enumerate(rows):
+        rank = 8 - row_idx
+        line = f"{rank}"
+        for char in row:
+            if char in '12345678':
+                line += ' .' * int(char)
+            else:
+                line += f" {char}"
+        lines.append(line)
+    return '\n'.join(lines)
+
 
 def load_jsonl(path):
     records = []
@@ -184,6 +204,12 @@ def _legal_move_vector(fen, uci_to_index):
 
 
 class ChessDistillDataset(Dataset):
+    DEFAULT_USER_TEMPLATE = (
+        "Given the current chess board:\n{{ FEN }}\n\n"
+        "Choose the best legal move.\n\n"
+        "Output Format:\n<uci_move>...best move in uci format...</uci_move>"
+    )
+
     def __init__(
         self,
         jsonl_path,
@@ -199,6 +225,7 @@ class ChessDistillDataset(Dataset):
         include_legal_mask=False,
         log_samples=0,
         log_stats=True,
+        user_message_template_path=None,
     ):
         self.records = load_jsonl(jsonl_path)
         self.tokenizer = tokenizer
@@ -215,6 +242,15 @@ class ChessDistillDataset(Dataset):
         self._include_legal_mask = bool(include_legal_mask)
         self._log_samples = max(int(log_samples), 0)
         self._logged_samples = 0
+
+        if user_message_template_path is not None:
+            with open(user_message_template_path, "r", encoding="utf-8") as f:
+                template_str = f.read()
+            self._user_template = Template(template_str)
+            logger.info("Loaded user message template from %s.", user_message_template_path)
+        else:
+            self._user_template = Template(self.DEFAULT_USER_TEMPLATE)
+            logger.info("Using default user message template.")
 
         logger.info("Loaded %d records from %s.", len(self.records), jsonl_path)
         logger.info(
@@ -241,10 +277,7 @@ class ChessDistillDataset(Dataset):
     def __getitem__(self, idx):
         record = self.records[idx]
         fen = record["fen"]
-        user_content = (
-            f'Given the current chess board "{fen}", choose the best legal move\n\n'
-            "Output Format:\n<uci_move>...best move in uci format...</uci_move>"
-        )
+        user_content = self._user_template.render(FEN=fen)
         messages = [{"role": "user", "content": user_content}]
         if self._use_chat_template:
             prompt = self.tokenizer.apply_chat_template(
