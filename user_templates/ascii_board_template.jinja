@@ -1,0 +1,16 @@
+Given the current chess board in fen format, choose the next best legal move for the current turn.
+
+<board>
+  a b c d e f g h
+{% set parts = FEN.split(' ') %}{% for row in parts[0].split('/') -%}
+{{ 9 - loop.index }}
+{%- for char in row -%}
+    {%- if char in '12345678' -%}
+        {%- for i in range(char|int) %} .{% endfor -%}
+    {%- else %} {{ char }}{% endif -%}
+{%- endfor %}
+{% endfor -%}
+</board>
+
+Output Format:
+<uci_move>...best move in uci format...</uci_move>
