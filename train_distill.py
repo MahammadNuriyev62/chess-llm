@@ -85,7 +85,7 @@ def _parse_args():
     parser.add_argument("--per-device-train-batch-size", type=int, default=2)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=2e-4)
-    parser.add_argument("--weight-decay", type=float, default=0.00025)
+    parser.add_argument("--weight-decay", type=float, default=0.001)
     parser.add_argument("--num-train-epochs", type=float, default=1.0)
     parser.add_argument("--max-steps", type=int, default=-1)
     parser.add_argument("--warmup-steps", type=int, default=0)
@@ -269,11 +269,13 @@ def main():
         args.train_jsonl,
         tokenizer,
         uci_moves,
+        move_token_ids=move_token_ids,
         max_length=args.max_seq_length,
         temperature=args.temperature,
         cp_scale=args.cp_scale,
         legal_move_smoothing=args.legal_move_smoothing,
         output_start_token=OUTPUT_START_TOKEN,
+        output_end_token=OUTPUT_END_TOKEN,
         include_legal_mask=args.log_legal_metrics,
         log_samples=args.log_samples,
         log_stats=True,

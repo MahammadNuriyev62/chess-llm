@@ -3,6 +3,7 @@
 .lightning_studio/
 outputs/
 outputs_chess_distill/
+outputs_chess_distill2/
 .triton/
 trash/
 __pycache__/

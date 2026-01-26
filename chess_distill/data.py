@@ -210,11 +210,15 @@ class ChessDistillDataset(Dataset):
         "Output Format:\n<uci_move>...best move in uci format...</uci_move>"
     )
 
+    # Special marker in labels indicating soft-label position (KL divergence with move_probs)
+    SOFT_LABEL_MARKER = -2
+
     def __init__(
         self,
         jsonl_path,
         tokenizer,
         uci_moves,
+        move_token_ids,
         max_length=512,
         temperature=1.0,
         cp_scale=100.0,
@@ -222,6 +226,7 @@ class ChessDistillDataset(Dataset):
         add_special_tokens=False,
         legal_move_smoothing=0.1,
         output_start_token="<uci_move>",
+        output_end_token="</uci_move>",
         include_legal_mask=False,
         log_samples=0,
         log_stats=True,
@@ -231,6 +236,7 @@ class ChessDistillDataset(Dataset):
         self.tokenizer = tokenizer
         self.uci_moves = list(uci_moves)
         self.uci_to_index = {uci: idx for idx, uci in enumerate(uci_moves)}
+        self.move_token_ids = list(move_token_ids)
         self.max_length = max_length
         self.temperature = temperature
         self.cp_scale = cp_scale
@@ -238,10 +244,16 @@ class ChessDistillDataset(Dataset):
         self.add_special_tokens = add_special_tokens
         self.legal_move_smoothing = legal_move_smoothing
         self.output_start_token = output_start_token
+        self.output_end_token = output_end_token
         self._use_chat_template = hasattr(self.tokenizer, "apply_chat_template")
         self._include_legal_mask = bool(include_legal_mask)
         self._log_samples = max(int(log_samples), 0)
         self._logged_samples = 0
+
+        # Get token IDs for special tokens
+        self._start_token_id = self.tokenizer.convert_tokens_to_ids(output_start_token)
+        self._end_token_id = self.tokenizer.convert_tokens_to_ids(output_end_token)
+        self._eos_token_id = self.tokenizer.eos_token_id
 
         if user_message_template_path is not None:
             with open(user_message_template_path, "r", encoding="utf-8") as f:
@@ -284,16 +296,12 @@ class ChessDistillDataset(Dataset):
                 messages,
                 tokenize=False,
                 add_generation_prompt=True,
+                enable_thinking=False,
             )
         else:
             prompt = user_content + "\n"
-        prompt = prompt + self.output_start_token
-        enc = self.tokenizer(
-            prompt,
-            add_special_tokens=False,
-            truncation=True,
-            max_length=self.max_length,
-        )
+
+        # Build move probability vector (soft labels for the move token)
         move_probs = build_move_prob_vector(
             record,
             self.uci_to_index,
@@ -302,15 +310,55 @@ class ChessDistillDataset(Dataset):
             mate_score=self.mate_score,
             legal_move_smoothing=self.legal_move_smoothing,
         )
+
+        # Get best move from distribution for the sequence
+        best_move_idx = int(move_probs.argmax().item())
+        best_move_token_id = self.move_token_ids[best_move_idx]
+
+        # Tokenize prompt (without output tokens)
+        prompt_enc = self.tokenizer(
+            prompt,
+            add_special_tokens=False,
+            truncation=True,
+            max_length=self.max_length - 4,  # Reserve space for output tokens
+        )
+        prompt_ids = prompt_enc["input_ids"]
+        prompt_len = len(prompt_ids)
+
+        # Build full sequence: prompt + <uci_move> + move + </uci_move> + EOS
+        # EOS must be in input_ids so we can train the model to predict it
+        input_ids = prompt_ids + [
+            self._start_token_id,
+            best_move_token_id,
+            self._end_token_id,
+            self._eos_token_id,
+        ]
+        attention_mask = [1] * len(input_ids)
+
+        # Build labels for next-token prediction (HuggingFace convention):
+        # After shifting in trainer (shift_labels = labels[1:], shift_logits = logits[:-1]):
+        # - labels[i+1] is what input_ids[i] should predict
+        # - Prompt tokens: -100 (ignore, we don't train on predicting prompt)
+        # - Last prompt token predicts <uci_move>: labels[prompt_len] = start_token_id
+        # - <uci_move> predicts move (soft): labels[prompt_len+1] = SOFT_LABEL_MARKER
+        # - move predicts </uci_move>: labels[prompt_len+2] = end_token_id
+        # - </uci_move> predicts EOS: labels[prompt_len+3] = eos_token_id
+        labels = [-100] * prompt_len  # Ignore prompt token predictions
+        labels.append(self._start_token_id)  # Last prompt token predicts <uci_move>
+        labels.append(self.SOFT_LABEL_MARKER)  # <uci_move> predicts move (soft label)
+        labels.append(self._end_token_id)  # move predicts </uci_move>
+        labels.append(self._eos_token_id)  # </uci_move> predicts EOS
+
         legal_mask = None
         if self._include_legal_mask:
             legal_mask = self._build_legal_mask(fen)
         if self._logged_samples < self._log_samples:
             self._logged_samples += 1
-            self._log_sample(idx, fen, enc, move_probs, legal_mask)
+            self._log_sample(idx, fen, {"input_ids": input_ids}, move_probs, legal_mask)
         return {
-            "input_ids": enc["input_ids"],
-            "attention_mask": enc["attention_mask"],
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
             "move_probs": move_probs,
             **({"legal_mask": legal_mask} if legal_mask is not None else {}),
         }
@@ -445,14 +493,32 @@ class DistillDataCollator:
         self._logged_batch = False
 
     def __call__(self, features):
-        inputs = [
-            {
-                "input_ids": feature["input_ids"],
-                "attention_mask": feature["attention_mask"],
-            }
-            for feature in features
-        ]
-        batch = self.tokenizer.pad(inputs, padding=True, return_tensors="pt")
+        # Get max length in batch
+        max_len = max(len(f["input_ids"]) for f in features)
+        pad_token_id = self.tokenizer.pad_token_id
+
+        # Pad input_ids, attention_mask, and labels
+        padded_input_ids = []
+        padded_attention_mask = []
+        padded_labels = []
+
+        for feature in features:
+            input_ids = feature["input_ids"]
+            attention_mask = feature["attention_mask"]
+            labels = feature["labels"]
+            pad_len = max_len - len(input_ids)
+
+            # Pad on the right
+            padded_input_ids.append(input_ids + [pad_token_id] * pad_len)
+            padded_attention_mask.append(attention_mask + [0] * pad_len)
+            padded_labels.append(labels + [-100] * pad_len)  # -100 for ignored positions
+
+        batch = {
+            "input_ids": torch.tensor(padded_input_ids, dtype=torch.long),
+            "attention_mask": torch.tensor(padded_attention_mask, dtype=torch.long),
+            "labels": torch.tensor(padded_labels, dtype=torch.long),
+        }
+
         move_probs = torch.stack([feature["move_probs"] for feature in features])
         batch["move_probs"] = move_probs
         if "legal_mask" in features[0]:
@@ -463,16 +529,27 @@ class DistillDataCollator:
             lengths = batch["attention_mask"].sum(dim=1)
             move_sums = move_probs.sum(dim=1)
             nonzero = (move_probs > 0).sum(dim=1)
+            # Count hard and soft label positions
+            hard_label_count = ((batch["labels"] >= 0)).sum(dim=1)
+            soft_label_count = (batch["labels"] == ChessDistillDataset.SOFT_LABEL_MARKER).sum(dim=1)
             logger.info(
-                "First batch shapes: input_ids=%s attention_mask=%s move_probs=%s.",
+                "First batch shapes: input_ids=%s attention_mask=%s labels=%s move_probs=%s.",
                 tuple(batch["input_ids"].shape),
                 tuple(batch["attention_mask"].shape),
+                tuple(batch["labels"].shape),
                 tuple(move_probs.shape),
             )
             logger.info(
                 "First batch lengths: min=%d max=%d.",
                 int(lengths.min().item()),
                 int(lengths.max().item()),
+            )
+            logger.info(
+                "First batch labels: hard_labels=%d-%d soft_labels=%d-%d.",
+                int(hard_label_count.min().item()),
+                int(hard_label_count.max().item()),
+                int(soft_label_count.min().item()),
+                int(soft_label_count.max().item()),
             )
             logger.info(
                 "First batch move_probs: sum min=%.4f max=%.4f nonzero min=%d max=%d.",

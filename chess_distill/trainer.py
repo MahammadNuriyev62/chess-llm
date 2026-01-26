@@ -4,7 +4,12 @@ import torch
 import torch.nn.functional as F
 from transformers import Trainer
 
+from chess_distill.data import ChessDistillDataset
+
 logger = logging.getLogger(__name__)
+
+# Marker for soft label positions (must match ChessDistillDataset.SOFT_LABEL_MARKER)
+SOFT_LABEL_MARKER = ChessDistillDataset.SOFT_LABEL_MARKER
 
 
 class ChessDistillTrainer(Trainer):
@@ -53,26 +58,58 @@ class ChessDistillTrainer(Trainer):
         inputs = {k: v for k, v in inputs.items()}
         move_probs = inputs.pop("move_probs")
         legal_mask = inputs.pop("legal_mask", None)
+        labels = inputs.pop("labels")
+
         outputs = model(**inputs, use_cache=False)
+        logits = outputs.logits  # (batch, seq_len, vocab_size)
 
-        logits = outputs.logits
-        last_logits = logits[:, -1, :]
-        move_ids = self._move_token_ids.to(last_logits.device)
-        move_logits = last_logits.index_select(dim=-1, index=move_ids)
+        # Shift logits and labels for next-token prediction
+        # logits[:, i, :] predicts labels[:, i]
+        shift_logits = logits[:, :-1, :].contiguous()  # (batch, seq_len-1, vocab)
+        shift_labels = labels[:, 1:].contiguous()  # (batch, seq_len-1)
 
-        log_probs = F.log_softmax(move_logits, dim=-1)
-        target = move_probs.to(log_probs.device)
-        row_sums = target.sum(dim=-1)
-        valid = row_sums > 0
-        if valid.any():
-            target = target[valid] / row_sums[valid].unsqueeze(-1)
-            log_probs = log_probs[valid]
-            loss = F.kl_div(log_probs, target, reduction="batchmean")
+        batch_size, seq_len, vocab_size = shift_logits.shape
+
+        # === Hard labels loss (cross-entropy) ===
+        # Positions where labels >= 0 are hard labels
+        hard_label_mask = shift_labels >= 0
+        if hard_label_mask.any():
+            hard_logits = shift_logits[hard_label_mask]  # (N_hard, vocab)
+            hard_targets = shift_labels[hard_label_mask]  # (N_hard,)
+            ce_loss = F.cross_entropy(hard_logits, hard_targets, reduction="mean")
         else:
-            loss = log_probs.sum() * 0
-            if not self._warned_no_valid:
-                self._warned_no_valid = True
-                logger.warning("All move_probs rows are zero; loss is forced to 0.")
+            ce_loss = shift_logits.sum() * 0
+
+        # === Soft labels loss (KL divergence for move tokens) ===
+        # Positions where labels == SOFT_LABEL_MARKER are soft labels
+        soft_label_mask = shift_labels == SOFT_LABEL_MARKER
+        if soft_label_mask.any():
+            soft_logits = shift_logits[soft_label_mask]  # (N_soft, vocab)
+            move_ids = self._move_token_ids.to(soft_logits.device)
+            move_logits = soft_logits.index_select(dim=-1, index=move_ids)  # (N_soft, num_moves)
+
+            log_probs = F.log_softmax(move_logits, dim=-1)
+            target = move_probs.to(log_probs.device)  # (batch, num_moves)
+            row_sums = target.sum(dim=-1)
+            valid = row_sums > 0
+
+            if valid.any():
+                target_norm = target[valid] / row_sums[valid].unsqueeze(-1)
+                log_probs_valid = log_probs[valid]
+                kl_loss = F.kl_div(log_probs_valid, target_norm, reduction="batchmean")
+            else:
+                kl_loss = log_probs.sum() * 0
+                if not self._warned_no_valid:
+                    self._warned_no_valid = True
+                    logger.warning("All move_probs rows are zero; KL loss is forced to 0.")
+        else:
+            kl_loss = shift_logits.sum() * 0
+            move_logits = None
+            row_sums = move_probs.sum(dim=-1)
+            valid = row_sums > 0
+
+        # Combine losses
+        loss = ce_loss + kl_loss
 
         if torch.isnan(loss).any() and not self._warned_nan_loss:
             self._warned_nan_loss = True
@@ -83,22 +120,29 @@ class ChessDistillTrainer(Trainer):
         if log_every and step % log_every == 0 and self._last_loss_log_step != step:
             self._last_loss_log_step = step
             with torch.no_grad():
-                batch_size = int(move_probs.size(0))
                 valid_count = int(valid.sum().item())
                 zero_rows = batch_size - valid_count
                 row_sum_mean = float(row_sums.mean().item())
-                move_mean = float(move_logits.mean().item())
-                move_std = float(move_logits.std().item())
-                max_target = (
-                    float(target.max().item()) if valid.any() else 0.0
-                )
-                metrics = self._compute_batch_metrics(
-                    move_logits,
-                    move_probs,
-                    row_sums,
-                    valid,
-                    legal_mask,
-                )
+                hard_label_count = int(hard_label_mask.sum().item())
+                soft_label_count = int(soft_label_mask.sum().item())
+
+                if move_logits is not None:
+                    move_mean = float(move_logits.mean().item())
+                    move_std = float(move_logits.std().item())
+                    max_target = float(move_probs.max().item()) if valid.any() else 0.0
+                    metrics = self._compute_batch_metrics(
+                        move_logits,
+                        move_probs,
+                        row_sums,
+                        valid,
+                        legal_mask,
+                    )
+                else:
+                    move_mean = 0.0
+                    move_std = 0.0
+                    max_target = 0.0
+                    metrics = {}
+
                 if metrics:
                     self.log(metrics)
                     summary = [
@@ -123,14 +167,18 @@ class ChessDistillTrainer(Trainer):
                         )
                     logger.info("Step %d metrics: %s.", step, " ".join(summary))
             logger.info(
-                "Step %d loss=%.6f batch=%d valid=%d zero_rows=%d "
-                "row_sum_mean=%.4f move_logits_mean=%.4f move_logits_std=%.4f "
-                "max_target=%.4f.",
+                "Step %d loss=%.6f (ce=%.6f kl=%.6f) batch=%d valid=%d zero_rows=%d "
+                "hard_labels=%d soft_labels=%d row_sum_mean=%.4f "
+                "move_logits_mean=%.4f move_logits_std=%.4f max_target=%.4f.",
                 step,
                 float(loss.detach().item()),
+                float(ce_loss.detach().item()),
+                float(kl_loss.detach().item()),
                 batch_size,
                 valid_count,
                 zero_rows,
+                hard_label_count,
+                soft_label_count,
                 row_sum_mean,
                 move_mean,
                 move_std,
@@ -141,6 +189,7 @@ class ChessDistillTrainer(Trainer):
             self._log_pred_steps
             and step % self._log_pred_steps == 0
             and self._last_pred_log_step != step
+            and move_logits is not None
         ):
             self._last_pred_log_step = step
             self._log_predictions(inputs, move_logits, move_probs, row_sums, valid, step)

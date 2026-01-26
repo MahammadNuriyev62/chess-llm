@@ -239,23 +239,26 @@ python generate_dataset.py 100000 \
 
 ```bash
 python train_distill.py \
-  --model-name unsloth/Qwen2.5-1.5B-Instruct
+  --model-name unsloth/Qwen3-1.7B \
   --log-level DEBUG \
   --suppress-noisy-logs \
   --log-legal-metrics \
   --train-jsonl ./train.jsonl \
+  --lora-r 32 \
+  --lora-alpha 64 \
   --use-wandb \
   --wandb-project chess-distill \
-  --wandb-run-name exp-cosine-lr \
-  --per-device-train-batch-size 32 \
-  --lr-scheduler-type cosine \
+  --wandb-run-name linear-qwen3-1_7b \
+  --per-device-train-batch-size 8 \
+  --gradient-accumulation-steps 8 \
+  --lr-scheduler-type linear \
   --warmup-ratio 0.03 \
   --learning-rate 2e-4 \
-  --logging-steps 20 \
+  --logging-steps 40 \
   --max-seq-length 256 \
   --fp16 \
-  --user-message-template user_templates/fen_board_template.jinja \
-  > output.log 2>&1
+  --user-message-template user_templates/ascii_board_template.jinja \
+  > output_linear-qwen3-1_7b.log 2>&1
 ```
 
 ### Test Model

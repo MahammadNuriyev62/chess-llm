@@ -86,6 +86,7 @@ def _format_prompt(fen, tokenizer):
             messages,
             tokenize=False,
             add_generation_prompt=True,
+            enable_thinking=False,
         )
     else:
         prompt = user_content + "\n"
